@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>うごく、とけい</title>
+    <meta name="description" content="針だけで気分や場面を表現する、動くアナログ時計です。" />
+    <meta name="theme-color" content="#f7f1e6" />
+    <meta property="og:title" content="うごく、とけい" />
+    <meta property="og:description" content="あくび、びっくり、しょんぼりなどを時計の針だけで表現します。" />
+    <meta property="og:type" content="website" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <main class="workspace">
+        <section class="clock-stage" aria-label="アナログ時計">
+          <svg id="clock" class="clock" viewBox="-240 -240 480 480" role="img" aria-labelledby="clock-title clock-desc">
+            <title id="clock-title">ボタンに合わせて針が動く時計</title>
+            <desc id="clock-desc">時針と分針が現在時刻を示し、選んだ動きに応じて短い演技をします。</desc>
+            <g id="trails" class="trails"></g>
+            <circle class="dial-ring" cx="0" cy="0" r="184" />
+            <g id="ticks" class="ticks"></g>
+            <g id="numbers" class="numbers"></g>
+            <g class="hands">
+              <line id="hour-hand" class="hand hour-hand" x1="0" y1="16" x2="0" y2="-112" />
+              <line id="minute-hand" class="hand minute-hand" x1="0" y1="20" x2="0" y2="-168" />
+              <circle class="pin" cx="0" cy="0" r="15" />
+              <circle class="pin-cap" cx="0" cy="0" r="7" />
+            </g>
+          </svg>
+        </section>
+
+        <section class="controls" aria-label="時計の動き">
+          <div class="motion-grid">
+            <button type="button" class="motion-button active" data-motion="yawn">あくび</button>
+            <button type="button" class="motion-button" data-motion="surprise">びっくり</button>
+            <button type="button" class="motion-button" data-motion="sad">しょんぼり</button>
+            <button type="button" class="motion-button" data-motion="excited">わくわく</button>
+            <button type="button" class="motion-button" data-motion="sleepy">ねむい</button>
+            <button type="button" class="motion-button" data-motion="loose">だら〜ん</button>
+            <button type="button" class="motion-button" data-motion="hello">やっほー</button>
+          </div>
+        </section>
+
+        <aside class="history" aria-label="うごきの履歴">
+          <div class="history-head">
+            <h2>うごきの履歴</h2>
+            <button id="clear-history" type="button">すべてクリア</button>
+          </div>
+          <ol id="history-list"></ol>
+        </aside>
+      </main>
+
+      <footer class="statusbar" aria-live="polite">
+        <div class="pulse" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <p id="status-text">あくび：大きくのびをして、ゆっくり戻ります。</p>
+        <div class="meter" aria-label="動きの強さ">
+          <span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span></span>
+        </div>
+        <p id="duration-text">継続時間 4.2 秒</p>
+      </footer>
+    </div>
+    <script src="./script.js"></script>
+  </body>
+</html>
