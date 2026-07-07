@@ -9,6 +9,11 @@ const trails = document.querySelector("#trails");
 const statusText = document.querySelector("#status-text");
 const durationText = document.querySelector("#duration-text");
 const meter = [...document.querySelectorAll(".meter span")];
+const watchToggle = document.querySelector("#watch-toggle");
+const watchVideo = document.querySelector("#watch-video");
+const watchCanvas = document.querySelector("#watch-canvas");
+const watchState = document.querySelector("#watch-state");
+const watchLight = document.querySelector("#watch-light");
 
 const motions = {
   yawn: {
@@ -71,6 +76,7 @@ const motions = {
 
 let currentMotion = null;
 let motionStartedAt = 0;
+let lastCameraStatus = "";
 let history = [
   { word: "あくび", key: "yawn", at: new Date(Date.now() - 120000) },
   { word: "びっくり", key: "surprise", at: new Date(Date.now() - 315000) },
@@ -80,6 +86,18 @@ let history = [
   { word: "だら〜ん", key: "loose", at: new Date(Date.now() - 980000) },
   { word: "やっほー", key: "hello", at: new Date(Date.now() - 1160000) },
 ];
+
+const watchMode = {
+  active: false,
+  watched: false,
+  stream: null,
+  detector: null,
+  detectionTimer: null,
+  lastFrame: null,
+  lastFrameScore: 0,
+  nextSlackAt: 0,
+  detectionMethod: "none",
+};
 
 function polarPoint(radius, degrees) {
   const rad = (degrees - 90) * Math.PI / 180;
@@ -288,14 +306,20 @@ function drawTrails(key) {
   });
 }
 
-function playMotion(key) {
+function playMotion(key, options = {}) {
+  const { record = true, source = "manual" } = options;
   const motion = motions[key] || motions.yawn;
   currentMotion = key;
   motionStartedAt = performance.now();
   updateStatus(key, motion.label);
   drawTrails(key);
-  addHistory(motion.label, key);
+  if (record) {
+    addHistory(motion.label, key);
+  }
   setActiveMotion(key);
+  if (source === "manual" && watchMode.active) {
+    setWatchReadout(watchMode.watched, "手動で動かし中");
+  }
 }
 
 function addHistory(word, key) {
@@ -329,6 +353,164 @@ function setActiveMotion(key) {
   });
 }
 
+function setWatchReadout(watched, label) {
+  watchMode.watched = watched;
+  watchLight.classList.toggle("on", watched);
+  watchLight.classList.toggle("away", watchMode.active && !watched);
+  watchState.textContent = label;
+}
+
+function setExactTimeStatus() {
+  const nextStatus = "検知中：ちゃんと現在時刻を指しています。";
+  if (lastCameraStatus !== nextStatus) {
+    statusText.textContent = nextStatus;
+    durationText.textContent = "カメラ監視中";
+    meter.forEach((dot, index) => dot.classList.toggle("on", index < 5));
+    document.documentElement.style.setProperty("--red", "var(--teal)");
+    lastCameraStatus = nextStatus;
+  }
+}
+
+function chooseSlackMotion() {
+  const keys = ["yawn", "sad", "excited", "sleepy", "loose", "hello", "surprise"];
+  return keys[Math.floor(Math.random() * keys.length)];
+}
+
+function keepSlacking(now) {
+  if (!watchMode.active || watchMode.watched || now < watchMode.nextSlackAt) {
+    return;
+  }
+  const key = chooseSlackMotion();
+  playMotion(key, { record: false, source: "camera" });
+  watchMode.nextSlackAt = now + motions[key].duration * 0.72;
+}
+
+function estimatePresenceFromFrame() {
+  const context = watchCanvas.getContext("2d");
+  if (!context || watchVideo.readyState < 2) {
+    return false;
+  }
+
+  context.drawImage(watchVideo, 0, 0, watchCanvas.width, watchCanvas.height);
+  const data = context.getImageData(0, 0, watchCanvas.width, watchCanvas.height).data;
+  let brightness = 0;
+  let diff = 0;
+  const current = new Uint8ClampedArray(watchCanvas.width * watchCanvas.height);
+
+  for (let i = 0, pixel = 0; i < data.length; i += 4, pixel += 1) {
+    const value = Math.round((data[i] + data[i + 1] + data[i + 2]) / 3);
+    current[pixel] = value;
+    brightness += value;
+    if (watchMode.lastFrame) {
+      diff += Math.abs(value - watchMode.lastFrame[pixel]);
+    }
+  }
+
+  const pixels = current.length;
+  const averageBrightness = brightness / pixels;
+  const averageDiff = watchMode.lastFrame ? diff / pixels : 0;
+  watchMode.lastFrame = current;
+  watchMode.lastFrameScore = averageDiff;
+
+  return averageBrightness > 34 && (averageDiff > 1.4 || watchMode.watched);
+}
+
+async function detectWatching() {
+  if (!watchMode.active) {
+    return;
+  }
+
+  let watched = false;
+  let method = "気配";
+
+  if (watchMode.detector && watchVideo.readyState >= 2) {
+    try {
+      const faces = await watchMode.detector.detect(watchVideo);
+      watched = faces.length > 0;
+      method = "顔";
+    } catch {
+      watchMode.detector = null;
+    }
+  }
+
+  if (!watchMode.detector) {
+    watched = estimatePresenceFromFrame();
+  }
+
+  watchMode.detectionMethod = method;
+
+  if (watched) {
+    currentMotion = null;
+    setActiveMotion("");
+    setExactTimeStatus();
+    setWatchReadout(true, `${method}を検知：ちゃんと時刻を表示`);
+    watchMode.nextSlackAt = performance.now() + 1700;
+    return;
+  }
+
+  lastCameraStatus = "";
+  setWatchReadout(false, `${method}が見えない：サボり中`);
+  keepSlacking(performance.now());
+}
+
+async function startWatchMode() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setWatchReadout(false, "このブラウザではカメラが使えません");
+    return;
+  }
+
+  watchToggle.disabled = true;
+  watchState.textContent = "カメラの許可を待っています";
+
+  try {
+    watchMode.stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: "user",
+        width: { ideal: 320 },
+        height: { ideal: 240 },
+      },
+    });
+    watchVideo.srcObject = watchMode.stream;
+    await watchVideo.play();
+
+    if ("FaceDetector" in window) {
+      watchMode.detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
+    }
+
+    watchMode.active = true;
+    watchMode.lastFrame = null;
+    watchMode.nextSlackAt = 0;
+    watchToggle.classList.add("active");
+    watchToggle.textContent = "検知を止める";
+    setWatchReadout(false, "カメラ確認中");
+    await detectWatching();
+    watchMode.detectionTimer = window.setInterval(detectWatching, 650);
+  } catch {
+    setWatchReadout(false, "カメラを開始できませんでした");
+  } finally {
+    watchToggle.disabled = false;
+  }
+}
+
+function stopWatchMode() {
+  watchMode.active = false;
+  watchMode.watched = false;
+  watchMode.lastFrame = null;
+  lastCameraStatus = "";
+  window.clearInterval(watchMode.detectionTimer);
+  watchMode.detectionTimer = null;
+  if (watchMode.stream) {
+    watchMode.stream.getTracks().forEach((track) => track.stop());
+  }
+  watchMode.stream = null;
+  watchVideo.srcObject = null;
+  watchToggle.classList.remove("active");
+  watchToggle.textContent = "検知モード";
+  setWatchReadout(false, "カメラはオフ");
+  updateStatus(currentMotion || "yawn", currentMotion ? motions[currentMotion].label : "あくび");
+}
+
 function tick() {
   const now = performance.now();
   const base = baseAngles();
@@ -352,6 +534,13 @@ function tick() {
     }
   }
 
+  if (watchMode.active && watchMode.watched) {
+    hour = base.hour;
+    minute = base.minute;
+    hourScale = 1;
+    minuteScale = 1;
+  }
+
   setHandTransform(hourHand, hour, hourScale);
   setHandTransform(minuteHand, minute, minuteScale);
   requestAnimationFrame(tick);
@@ -366,6 +555,14 @@ motionButtons.forEach((button) => {
 clearHistory.addEventListener("click", () => {
   history = [];
   renderHistory();
+});
+
+watchToggle.addEventListener("click", () => {
+  if (watchMode.active) {
+    stopWatchMode();
+    return;
+  }
+  startWatchMode();
 });
 
 buildDial();

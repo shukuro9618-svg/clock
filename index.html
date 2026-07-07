@@ -41,6 +41,15 @@
             <button type="button" class="motion-button" data-motion="loose">だら〜ん</button>
             <button type="button" class="motion-button" data-motion="hello">やっほー</button>
           </div>
+          <div class="watch-mode" aria-live="polite">
+            <button id="watch-toggle" type="button" class="watch-button">検知モード</button>
+            <div class="watch-readout">
+              <span id="watch-light" class="watch-light"></span>
+              <span id="watch-state">カメラはオフ</span>
+            </div>
+            <video id="watch-video" class="watch-video" playsinline muted></video>
+            <canvas id="watch-canvas" width="96" height="72" aria-hidden="true"></canvas>
+          </div>
         </section>
 
         <aside class="history" aria-label="うごきの履歴">
