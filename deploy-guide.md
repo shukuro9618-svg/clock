@@ -10,6 +10,8 @@ https://app.netlify.com/drop
 
 カメラ機能は、公開URLが `https://` のときに動きます。Netlify、Vercel、Cloudflare Pages、GitHub Pages はHTTPSなので大丈夫です。
 
+AI目線検知は MediaPipe のモデルをCDNから読み込みます。利用者のカメラ映像はブラウザ内で処理され、サーバーへ送信しません。
+
 ## 他の選択肢
 
 - Vercel: 新しいプロジェクトとしてこのフォルダをアップロード

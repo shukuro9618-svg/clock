@@ -95,6 +95,8 @@ const watchMode = {
   detectionTimer: null,
   lastFrame: null,
   lastFrameScore: 0,
+  lastFrameBrightness: 0,
+  lastFrameContrast: 0,
   nextSlackAt: 0,
   detectionMethod: "none",
 };
@@ -385,22 +387,26 @@ function keepSlacking(now) {
   watchMode.nextSlackAt = now + motions[key].duration * 0.72;
 }
 
-function estimatePresenceFromFrame() {
+function analyzeCameraFrame() {
   const context = watchCanvas.getContext("2d");
   if (!context || watchVideo.readyState < 2) {
-    return false;
+    return { usable: false, fallbackWatched: false };
   }
 
   context.drawImage(watchVideo, 0, 0, watchCanvas.width, watchCanvas.height);
   const data = context.getImageData(0, 0, watchCanvas.width, watchCanvas.height).data;
   let brightness = 0;
   let diff = 0;
+  let min = 255;
+  let max = 0;
   const current = new Uint8ClampedArray(watchCanvas.width * watchCanvas.height);
 
   for (let i = 0, pixel = 0; i < data.length; i += 4, pixel += 1) {
     const value = Math.round((data[i] + data[i + 1] + data[i + 2]) / 3);
     current[pixel] = value;
     brightness += value;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
     if (watchMode.lastFrame) {
       diff += Math.abs(value - watchMode.lastFrame[pixel]);
     }
@@ -409,10 +415,16 @@ function estimatePresenceFromFrame() {
   const pixels = current.length;
   const averageBrightness = brightness / pixels;
   const averageDiff = watchMode.lastFrame ? diff / pixels : 0;
+  const contrast = max - min;
   watchMode.lastFrame = current;
   watchMode.lastFrameScore = averageDiff;
+  watchMode.lastFrameBrightness = averageBrightness;
+  watchMode.lastFrameContrast = contrast;
 
-  return averageBrightness > 34 && (averageDiff > 1.4 || watchMode.watched);
+  return {
+    usable: averageBrightness > 28 && contrast > 12,
+    fallbackWatched: averageBrightness > 42 && contrast > 22 && averageDiff > 2.8,
+  };
 }
 
 function looksTowardClock(face) {
@@ -441,19 +453,22 @@ async function detectWatching() {
 
   let watched = false;
   let method = "気配";
+  const frameSignal = analyzeCameraFrame();
 
   if (watchMode.detector && watchVideo.readyState >= 2) {
+    method = "目線";
     try {
-      const faces = await watchMode.detector.detect(watchVideo);
-      watched = faces.some(looksTowardClock);
-      method = "目線";
+      if (frameSignal.usable) {
+        const faces = await watchMode.detector.detect(watchVideo);
+        watched = faces.some(looksTowardClock);
+      }
     } catch {
       watchMode.detector = null;
     }
   }
 
   if (!watchMode.detector) {
-    watched = estimatePresenceFromFrame();
+    watched = frameSignal.fallbackWatched;
   }
 
   watchMode.detectionMethod = method;
