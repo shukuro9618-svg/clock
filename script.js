@@ -415,6 +415,25 @@ function estimatePresenceFromFrame() {
   return averageBrightness > 34 && (averageDiff > 1.4 || watchMode.watched);
 }
 
+function looksTowardClock(face) {
+  const box = face.boundingBox;
+  const videoWidth = watchVideo.videoWidth || watchVideo.clientWidth;
+  const videoHeight = watchVideo.videoHeight || watchVideo.clientHeight;
+
+  if (!box || !videoWidth || !videoHeight) {
+    return true;
+  }
+
+  const centerX = (box.x + box.width / 2) / videoWidth;
+  const centerY = (box.y + box.height / 2) / videoHeight;
+  const faceWidth = box.width / videoWidth;
+  const faceHeight = box.height / videoHeight;
+  const centered = centerX > 0.28 && centerX < 0.72 && centerY > 0.18 && centerY < 0.82;
+  const visibleEnough = faceWidth > 0.14 && faceHeight > 0.18;
+
+  return centered && visibleEnough;
+}
+
 async function detectWatching() {
   if (!watchMode.active) {
     return;
@@ -426,8 +445,8 @@ async function detectWatching() {
   if (watchMode.detector && watchVideo.readyState >= 2) {
     try {
       const faces = await watchMode.detector.detect(watchVideo);
-      watched = faces.length > 0;
-      method = "顔";
+      watched = faces.some(looksTowardClock);
+      method = "目線";
     } catch {
       watchMode.detector = null;
     }
@@ -449,7 +468,7 @@ async function detectWatching() {
   }
 
   lastCameraStatus = "";
-  setWatchReadout(false, `${method}が見えない：サボり中`);
+  setWatchReadout(false, `${method}が外れてる：サボり中`);
   keepSlacking(performance.now());
 }
 
