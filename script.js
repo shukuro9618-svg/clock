@@ -77,6 +77,14 @@ const motions = {
 let currentMotion = null;
 let motionStartedAt = 0;
 let lastCameraStatus = "";
+let lastTickAt = 0;
+const visualHands = {
+  ready: false,
+  hour: 0,
+  minute: 0,
+  hourScale: 1,
+  minuteScale: 1,
+};
 let history = [
   { word: "あくび", key: "yawn", at: new Date(Date.now() - 120000) },
   { word: "びっくり", key: "surprise", at: new Date(Date.now() - 315000) },
@@ -92,6 +100,9 @@ const watchMode = {
   watched: false,
   stream: null,
   detector: null,
+  aiDetector: null,
+  aiLoading: null,
+  aiReady: false,
   detectionTimer: null,
   lastFrame: null,
   lastFrameScore: 0,
@@ -100,6 +111,10 @@ const watchMode = {
   nextSlackAt: 0,
   detectionMethod: "none",
 };
+
+const mediapipeVersion = "0.10.22";
+const mediapipeBase = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mediapipeVersion}`;
+const faceModelUrl = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task";
 
 function polarPoint(radius, degrees) {
   const rad = (degrees - 90) * Math.PI / 180;
@@ -157,6 +172,26 @@ function easeInOutSine(t) {
 function shortestMix(from, to, amount) {
   const delta = ((to - from + 540) % 360) - 180;
   return from + delta * amount;
+}
+
+function angleDelta(from, to) {
+  return ((to - from + 540) % 360) - 180;
+}
+
+function moveAngleToward(from, to, maxStep) {
+  const delta = angleDelta(from, to);
+  if (Math.abs(delta) <= maxStep) {
+    return to;
+  }
+  return from + Math.sign(delta) * maxStep;
+}
+
+function moveValueToward(from, to, maxStep) {
+  const delta = to - from;
+  if (Math.abs(delta) <= maxStep) {
+    return to;
+  }
+  return from + Math.sign(delta) * maxStep;
 }
 
 function motionOffset(key, t, base) {
@@ -446,6 +481,99 @@ function looksTowardClock(face) {
   return centered && visibleEnough;
 }
 
+async function loadAiDetector() {
+  if (watchMode.aiDetector) {
+    return watchMode.aiDetector;
+  }
+
+  if (watchMode.aiLoading) {
+    return watchMode.aiLoading;
+  }
+
+  watchMode.aiLoading = import(`${mediapipeBase}/vision_bundle.mjs`)
+    .then(async ({ FaceLandmarker, FilesetResolver }) => {
+      const vision = await FilesetResolver.forVisionTasks(`${mediapipeBase}/wasm`);
+      const detector = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: faceModelUrl,
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        outputFaceBlendshapes: true,
+      });
+      watchMode.aiDetector = detector;
+      watchMode.aiReady = true;
+      return detector;
+    })
+    .catch(async () => {
+      const { FaceLandmarker, FilesetResolver } = await import(`${mediapipeBase}/vision_bundle.mjs`);
+      const vision = await FilesetResolver.forVisionTasks(`${mediapipeBase}/wasm`);
+      const detector = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: faceModelUrl,
+          delegate: "CPU",
+        },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        outputFaceBlendshapes: true,
+      });
+      watchMode.aiDetector = detector;
+      watchMode.aiReady = true;
+      return detector;
+    })
+    .catch(() => null);
+
+  return watchMode.aiLoading;
+}
+
+function scoreBlendshapes(blendshapes = []) {
+  const scores = new Map(blendshapes.map((shape) => [shape.categoryName, shape.score]));
+  const lookAway =
+    (scores.get("eyeLookOutLeft") || 0) +
+    (scores.get("eyeLookInLeft") || 0) +
+    (scores.get("eyeLookUpLeft") || 0) +
+    (scores.get("eyeLookDownLeft") || 0) +
+    (scores.get("eyeLookOutRight") || 0) +
+    (scores.get("eyeLookInRight") || 0) +
+    (scores.get("eyeLookUpRight") || 0) +
+    (scores.get("eyeLookDownRight") || 0);
+  const blink = (scores.get("eyeBlinkLeft") || 0) + (scores.get("eyeBlinkRight") || 0);
+  const squint = (scores.get("eyeSquintLeft") || 0) + (scores.get("eyeSquintRight") || 0);
+
+  return {
+    lookingForward: lookAway < 1.35 && blink < 0.72,
+    confidence: 1 - Math.min(1, (lookAway + blink + squint * 0.35) / 2.5),
+  };
+}
+
+function detectAiGaze(frameSignal) {
+  if (!watchMode.aiDetector || !frameSignal.usable || watchVideo.readyState < 2) {
+    return false;
+  }
+
+  const result = watchMode.aiDetector.detectForVideo(watchVideo, performance.now());
+  const face = result.faceLandmarks?.[0];
+
+  if (!face) {
+    return false;
+  }
+
+  const minX = Math.min(...face.map((point) => point.x));
+  const maxX = Math.max(...face.map((point) => point.x));
+  const minY = Math.min(...face.map((point) => point.y));
+  const maxY = Math.max(...face.map((point) => point.y));
+  const faceWidth = maxX - minX;
+  const faceHeight = maxY - minY;
+  const centerX = minX + faceWidth / 2;
+  const centerY = minY + faceHeight / 2;
+  const centered = centerX > 0.25 && centerX < 0.75 && centerY > 0.16 && centerY < 0.84;
+  const visibleEnough = faceWidth > 0.16 && faceHeight > 0.18;
+  const blendshapeSignal = scoreBlendshapes(result.faceBlendshapes?.[0]?.categories);
+
+  return centered && visibleEnough && blendshapeSignal.lookingForward;
+}
+
 async function detectWatching() {
   if (!watchMode.active) {
     return;
@@ -455,7 +583,15 @@ async function detectWatching() {
   let method = "気配";
   const frameSignal = analyzeCameraFrame();
 
-  if (watchMode.detector && watchVideo.readyState >= 2) {
+  if (watchMode.aiReady) {
+    method = "AI目線";
+    try {
+      watched = detectAiGaze(frameSignal);
+    } catch {
+      watchMode.aiReady = false;
+      watchMode.aiDetector = null;
+    }
+  } else if (watchMode.detector && watchVideo.readyState >= 2) {
     method = "目線";
     try {
       if (frameSignal.usable) {
@@ -467,7 +603,7 @@ async function detectWatching() {
     }
   }
 
-  if (!watchMode.detector) {
+  if (!watchMode.aiReady && !watchMode.detector) {
     watched = frameSignal.fallbackWatched;
   }
 
@@ -507,6 +643,12 @@ async function startWatchMode() {
     });
     watchVideo.srcObject = watchMode.stream;
     await watchVideo.play();
+    setWatchReadout(false, "AI検知を準備中");
+    loadAiDetector().then(() => {
+      if (watchMode.active && watchMode.aiReady) {
+        setWatchReadout(watchMode.watched, "AI検知を使用中");
+      }
+    });
 
     if ("FaceDetector" in window) {
       watchMode.detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
@@ -547,11 +689,13 @@ function stopWatchMode() {
 
 function tick() {
   const now = performance.now();
+  const elapsed = lastTickAt ? Math.min((now - lastTickAt) / 1000, 0.06) : 0;
+  lastTickAt = now;
   const base = baseAngles();
-  let hour = base.hour;
-  let minute = base.minute;
-  let hourScale = 1;
-  let minuteScale = 1;
+  let targetHour = base.hour;
+  let targetMinute = base.minute;
+  let targetHourScale = 1;
+  let targetMinuteScale = 1;
 
   if (currentMotion) {
     const motion = motions[currentMotion];
@@ -561,22 +705,36 @@ function tick() {
     } else {
       const easedReturn = t > 0.68 ? 1 - easeOutCubic((t - 0.68) / 0.32) : 1;
       const posed = motionOffset(currentMotion, t, base);
-      hour = shortestMix(base.hour, posed.hour, easedReturn);
-      minute = shortestMix(base.minute, posed.minute, easedReturn);
-      hourScale = 1 + (posed.hourScale - 1) * easedReturn;
-      minuteScale = 1 + (posed.minuteScale - 1) * easedReturn;
+      targetHour = shortestMix(base.hour, posed.hour, easedReturn);
+      targetMinute = shortestMix(base.minute, posed.minute, easedReturn);
+      targetHourScale = 1 + (posed.hourScale - 1) * easedReturn;
+      targetMinuteScale = 1 + (posed.minuteScale - 1) * easedReturn;
     }
   }
 
   if (watchMode.active && watchMode.watched) {
-    hour = base.hour;
-    minute = base.minute;
-    hourScale = 1;
-    minuteScale = 1;
+    targetHour = base.hour;
+    targetMinute = base.minute;
+    targetHourScale = 1;
+    targetMinuteScale = 1;
   }
 
-  setHandTransform(hourHand, hour, hourScale);
-  setHandTransform(minuteHand, minute, minuteScale);
+  if (!visualHands.ready) {
+    visualHands.ready = true;
+    visualHands.hour = targetHour;
+    visualHands.minute = targetMinute;
+    visualHands.hourScale = targetHourScale;
+    visualHands.minuteScale = targetMinuteScale;
+  } else {
+    const urgency = currentMotion ? 1 : 0.68;
+    visualHands.hour = moveAngleToward(visualHands.hour, targetHour, 220 * urgency * elapsed);
+    visualHands.minute = moveAngleToward(visualHands.minute, targetMinute, 360 * urgency * elapsed);
+    visualHands.hourScale = moveValueToward(visualHands.hourScale, targetHourScale, 0.35 * elapsed);
+    visualHands.minuteScale = moveValueToward(visualHands.minuteScale, targetMinuteScale, 0.45 * elapsed);
+  }
+
+  setHandTransform(hourHand, visualHands.hour, visualHands.hourScale);
+  setHandTransform(minuteHand, visualHands.minute, visualHands.minuteScale);
   requestAnimationFrame(tick);
 }
 
